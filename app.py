@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import io
@@ -137,6 +138,121 @@ def fit_models(returns: pd.Series, horizon: int) -> tuple[pd.DataFrame, object, 
     return forecasts, arch_fit, garch_fit
 
 
+def build_excel_download(
+    price_data: pd.DataFrame,
+    comparison_data: pd.DataFrame,
+    asset: str,
+    ticker: str,
+    period: str,
+    data_source: str,
+    as_of: date,
+    latest_close: float,
+    full_hist_vol: float,
+    latest_rolling_vol: float,
+    rolling_days: int,
+) -> bytes:
+    """Create an analysis-ready, formatted Excel workbook in memory."""
+    output = io.BytesIO()
+    export_data = price_data.reset_index().copy()
+    export_data.columns = ["Date", "Adjusted Close (₹)", "Daily Log Return", "Rolling Volatility", "EWMA Volatility"]
+    export_data["Date"] = pd.to_datetime(export_data["Date"]).dt.tz_localize(None)
+
+    with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="dd-mmm-yyyy") as writer:
+        workbook = writer.book
+        navy, blue, gold, pale_blue, pale_gold = "#0B2545", "#0B5CAD", "#F3C84B", "#EAF1F7", "#FFF1B8"
+        title_fmt = workbook.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": navy, "font_size": 18, "align": "left", "valign": "vcenter"})
+        subtitle_fmt = workbook.add_format({"font_color": "#DDEAF4", "bg_color": navy, "font_size": 10, "align": "left", "valign": "vcenter"})
+        section_fmt = workbook.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": blue, "font_size": 11, "align": "left", "valign": "vcenter"})
+        label_fmt = workbook.add_format({"bold": True, "font_color": navy, "bg_color": pale_blue, "border": 0, "align": "left"})
+        value_fmt = workbook.add_format({"font_color": navy, "bg_color": "#FFFFFF", "align": "right"})
+        currency_fmt = workbook.add_format({"font_color": navy, "bg_color": "#FFFFFF", "num_format": '#,##0.00;[Red](#,##0.00);-'})
+        percent_fmt = workbook.add_format({"font_color": navy, "bg_color": "#FFFFFF", "num_format": '0.00%;[Red](0.00%);-'})
+        note_fmt = workbook.add_format({"font_color": "#3C5368", "bg_color": pale_gold, "text_wrap": True, "valign": "top"})
+        header_fmt = workbook.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": navy, "border": 0, "align": "center", "valign": "vcenter", "text_wrap": True})
+
+        summary = workbook.add_worksheet("Summary")
+        writer.sheets["Summary"] = summary
+        summary.hide_gridlines(2)
+        summary.set_column("A:A", 29); summary.set_column("B:B", 24); summary.set_column("C:F", 15)
+        summary.set_row(0, 30); summary.merge_range("A1:F1", "Mastering Basics of Volatility", title_fmt)
+        summary.merge_range("A2:F2", "Mountain Path Academy · Formatted analysis download", subtitle_fmt)
+        summary.merge_range("A4:F4", "Analysis profile", section_fmt)
+        profile = [
+            ("Instrument", asset), ("Ticker", ticker), ("Selected period", period),
+            ("As-of date", as_of), ("Data source", data_source), ("Observations", len(price_data)),
+        ]
+        for row, (label, value) in enumerate(profile, start=4):
+            summary.write(row, 0, label, label_fmt)
+            if isinstance(value, date): summary.write_datetime(row, 1, pd.Timestamp(value).to_pydatetime(), workbook.add_format({"num_format": "dd-mmm-yyyy", "font_color": navy}))
+            else: summary.write(row, 1, value, value_fmt)
+        summary.merge_range("A12:F12", "Key volatility outputs", section_fmt)
+        metrics = [
+            ("Latest adjusted close (₹)", latest_close, currency_fmt),
+            ("Full-period historic volatility", full_hist_vol / 100, percent_fmt),
+            (f"Latest {rolling_days}-day rolling volatility", latest_rolling_vol / 100, percent_fmt),
+        ]
+        for row, (label, value, fmt) in enumerate(metrics, start=12):
+            summary.write(row, 0, label, label_fmt); summary.write(row, 1, value, fmt)
+        summary.merge_range("A17:F17", "Interpretation", section_fmt)
+        summary.merge_range("A18:F20", "Volatility measures dispersion, not return direction or maximum loss. Historic volatility is backward-looking; implied volatility is model- and market-dependent; ARCH/GARCH forecasts remain conditional on the selected sample and specification.", note_fmt)
+        summary.merge_range("A22:F22", "Source and usage note", section_fmt)
+        summary.merge_range("A23:F25", f"Source: {data_source}. Market data may be delayed. Nifty 50 constituents may change. This workbook is educational material only—not investment, trading, or option-pricing advice.", note_fmt)
+        summary.freeze_panes(3, 0)
+
+        export_data.to_excel(writer, sheet_name="Daily Data", index=False, startrow=1)
+        daily = writer.sheets["Daily Data"]
+        daily.hide_gridlines(2); daily.freeze_panes(2, 1); daily.autofilter(1, 0, len(export_data) + 1, len(export_data.columns) - 1); daily.set_row(0, 30)
+        daily.merge_range("A1:E1", f"{asset} ({ticker}) · Adjusted daily price and volatility series", title_fmt)
+        for col, name in enumerate(export_data.columns): daily.write(1, col, name, header_fmt)
+        daily.set_column("A:A", 14, workbook.add_format({"num_format": "dd-mmm-yyyy"}))
+        price_fmt = workbook.add_format({"num_format": '#,##0.00;[Red](#,##0.00);-'})
+        daily.set_column("B:B", 18, price_fmt)
+        daily.set_column("C:C", 18, workbook.add_format({"num_format": '0.0000%;[Red](0.0000%);-'}))
+        daily.set_column("D:E", 20, workbook.add_format({"num_format": '0.00%;[Red](0.00%);-'}))
+        # App values are stored as percentage points; scale only the workbook display columns to true percentage values.
+        for excel_row, (_, record) in enumerate(export_data.iterrows(), start=2):
+            daily.write_number(excel_row, 1, float(record["Adjusted Close (₹)"]), price_fmt)
+            if pd.notna(record["Rolling Volatility"]): daily.write_number(excel_row, 3, float(record["Rolling Volatility"]) / 100)
+            if pd.notna(record["EWMA Volatility"]): daily.write_number(excel_row, 4, float(record["EWMA Volatility"]) / 100)
+        chart = workbook.add_chart({"type": "line"})
+        chart.add_series({"name": f"Rolling {rolling_days}D", "categories": ["Daily Data", 2, 0, len(export_data) + 1, 0], "values": ["Daily Data", 2, 3, len(export_data) + 1, 3], "line": {"color": "#7C3AED", "width": 2}})
+        chart.add_series({"name": "EWMA", "categories": ["Daily Data", 2, 0, len(export_data) + 1, 0], "values": ["Daily Data", 2, 4, len(export_data) + 1, 4], "line": {"color": "#13A89E", "width": 2}})
+        chart.set_title({"name": "Annualised volatility through time"}); chart.set_x_axis({"date_axis": True, "num_format": "dd-mmm"}); chart.set_y_axis({"name": "Volatility", "num_format": "0%"}); chart.set_legend({"position": "bottom"}); chart.set_style(10)
+        daily.insert_chart("G3", chart, {"x_scale": 1.35, "y_scale": 1.2})
+
+        comparison_data.to_excel(writer, sheet_name="Model Comparison", index=False, startrow=1)
+        compare_sheet = writer.sheets["Model Comparison"]
+        compare_sheet.hide_gridlines(2); compare_sheet.freeze_panes(2, 0); compare_sheet.set_row(0, 30)
+        compare_sheet.merge_range("A1:D1", "Volatility model comparison", title_fmt)
+        for col, name in enumerate(comparison_data.columns): compare_sheet.write(1, col, name, header_fmt)
+        compare_sheet.set_column("A:A", 28); compare_sheet.set_column("B:B", 25, workbook.add_format({"num_format": '0.00%;[Red](0.00%);-'})); compare_sheet.set_column("C:C", 30); compare_sheet.set_column("D:D", 35)
+        for excel_row, value in enumerate(comparison_data["Annualised volatility (%)"], start=2): compare_sheet.write_number(excel_row, 1, float(value) / 100)
+        compare_sheet.autofilter(1, 0, len(comparison_data) + 1, 3)
+
+        guide = workbook.add_worksheet("Methodology & Limits")
+        writer.sheets["Methodology & Limits"] = guide
+        guide.hide_gridlines(2); guide.set_column("A:A", 24); guide.set_column("B:B", 95); guide.set_row(0, 30)
+        guide.merge_range("A1:B1", "Methodology, assumptions and limitations", title_fmt)
+        guide.write_row("A3", ["Measure", "What it means and what to watch"], header_fmt)
+        guidance = [
+            ("Historic volatility", "Annualised standard deviation of daily log returns. Sensitive to sample period, frequency, corporate-action adjustments and the √252 convention."),
+            ("Rolling volatility", "Highlights changing regimes. Short windows react quickly but are noisy; long windows are smoother but slower."),
+            ("EWMA", "Weights recent squared returns more heavily using λ=0.94. The decay choice is an assumption."),
+            ("Black–Scholes IV", "The volatility that makes a Black–Scholes price match the observed premium. Depends on model assumptions, market liquidity, rates, dividends, strike and expiry."),
+            ("ARCH / GARCH", "Conditional variance forecasts based on past shocks and variance. Can miss jumps, leverage effects, structural breaks and exogenous events."),
+            ("Important", "Volatility is not direction, expected return, Value at Risk, or maximum possible loss. Use these outputs as educational estimates, not trading recommendations."),
+        ]
+        body_wrap = workbook.add_format({"text_wrap": True, "valign": "top", "font_color": navy})
+        for row, (measure, explanation) in enumerate(guidance, start=3):
+            guide.write(row, 0, measure, label_fmt); guide.write(row, 1, explanation, body_wrap); guide.set_row(row, 42)
+        guide.write(11, 0, "Data source", label_fmt); guide.write(11, 1, data_source, body_wrap)
+        guide.write(12, 0, "Website", label_fmt); guide.write_url(12, 1, "https://themountainpathacademy.com/courses", string="https://themountainpathacademy.com/courses")
+        guide.freeze_panes(2, 0)
+
+        workbook.set_properties({"title": "Mastering Basics of Volatility", "subject": "Educational volatility analysis", "author": "Mountain Path Academy", "comments": "Generated by the Streamlit learning studio"})
+    return output.getvalue()
+
+
 with st.sidebar:
     st.markdown("## 〽️ Mastering Volatility")
     st.caption("MP2 · Interactive learning studio")
@@ -144,6 +260,9 @@ with st.sidebar:
     years_label = st.selectbox("Daily-price period", ["1 year", "3 years", "5 years"], index=1)
     years = int(years_label[0]); rolling_window = st.slider("Rolling-volatility window", 10, 90, 21)
     forecast_horizon = st.select_slider("Forecast horizon (trading days)", options=[1, 5, 10, 21, 63], value=21)
+    if st.button("↻ Refresh market data", use_container_width=True, help="Clears cached prices and requests the latest available daily observation."):
+        load_prices.clear()
+        st.rerun()
     st.markdown("---")
     st.markdown("### Guided journey\n1. Learn the volatility map\n2. Explore history\n3. Reverse-engineer IV\n4. Forecast changing risk\n5. Compare and interpret\n6. Test your learning")
     use_demo = st.toggle("Use classroom demo data", value=False, help="Useful if Yahoo Finance is temporarily unavailable.")
@@ -250,7 +369,17 @@ with tabs[4]:
     fig=go.Figure(go.Bar(x=comparison["Measure"],y=comparison["Annualised volatility (%)"],marker_color=[BLUE,PURPLE,TEAL,ORANGE,GREEN,GOLD][:len(comparison)],text=comparison["Annualised volatility (%)"].map(lambda x:f"{x:.1f}%"),textposition="outside")); fig.update_layout(title="Volatility is a family of estimates—not one truth",yaxis_title="Annualised volatility (%)"); st.plotly_chart(style_fig(fig),use_container_width=True)
     st.dataframe(comparison.style.format({"Annualised volatility (%)":"{:.2f}"}),use_container_width=True,hide_index=True)
     note("Differences are informative: IV may exceed realised estimates because options reflect forward uncertainty and risk premia; GARCH may jump after a shock; long-window HV may react slowly.")
-    csv=data.reset_index().to_csv(index=False).encode(); st.download_button("Download analysed daily data (CSV)",csv,file_name=f"{NIFTY_50[asset_name].replace('^','')}_volatility.csv",mime="text/csv")
+    excel_bytes = build_excel_download(
+        data, comparison, asset_name, NIFTY_50[asset_name], years_label, source,
+        data.index[-1].date(), spot, hist_vol, data["Rolling volatility"].iloc[-1], rolling_window,
+    )
+    st.download_button(
+        "⬇ Download formatted Excel analysis",
+        excel_bytes,
+        file_name=f"{NIFTY_50[asset_name].replace('^','')}_volatility_analysis.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
 
 with tabs[5]:
     section("Worked practice")
