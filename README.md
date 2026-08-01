@@ -10,7 +10,8 @@ A Mountain Path Academy educational app using the same navy-and-gold MP1 design 
 - Reverse-engineer Black–Scholes implied volatility from an observed option premium.
 - Fit ARCH(5) and GARCH(1,1) models and compare forward variance forecasts.
 - Study assumptions, limitations, worked practice, and a scored knowledge check.
-- Download the analysed daily dataset.
+- Refresh the selected instrument to request the latest available daily market observation.
+- Download a professionally formatted Excel workbook with summary metrics, daily data, a model comparison, methodology notes, and an embedded volatility chart.
 
 The app uses Yahoo Finance through `yfinance`. A reproducible classroom simulation is available in the sidebar and is also used automatically if live data is temporarily unavailable. Market prices may be delayed. The Nifty 50 list is an educational snapshot and should be reviewed when index constituents change.
 

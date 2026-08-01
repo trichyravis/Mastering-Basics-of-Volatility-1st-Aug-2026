@@ -5,3 +5,4 @@ plotly>=5.20
 yfinance>=0.2.54
 scipy>=1.11
 arch>=7.0
+XlsxWriter>=3.2
